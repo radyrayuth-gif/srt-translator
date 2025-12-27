@@ -33,4 +33,5 @@ if uploaded_file is not None:
             
             result = '\n'.join(translated_lines)
             st.success("Done!")
+
             st.download_button("Download SRT", result, file_name="khmer_subtitle.srt")
