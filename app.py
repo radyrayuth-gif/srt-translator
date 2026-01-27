@@ -2,13 +2,13 @@ import streamlit as st
 import asyncio
 import edge_tts
 from edge_tts import submaker
-import tempfile
 import os
 
+# កំណត់ទម្រង់ទំព័រ
 st.set_page_config(page_title="Khmer MP3 & SRT Generator", page_icon="🎙️")
 st.title("🎙️ Khmer MP3 & SRT Generator")
 
-# ១. កន្លែងដាក់អត្ថបទ
+# ១. បញ្ចូលអត្ថបទ
 text = st.text_area("បញ្ចូលអត្ថបទខ្មែរសម្រាប់បង្កើត SRT:", height=150)
 
 # ២. ជ្រើសរើសសំឡេង និងល្បឿន
@@ -18,11 +18,11 @@ with col1:
 with col2:
     speed = st.slider("ល្បឿនអាន:", 0.5, 2.0, 1.0, step=0.1)
 
-async def generate_audio_and_srt(text, voice_name, rate_val):
+# បង្កើត Function សម្រាប់បម្លែង (ត្រូវប្រាកដថាឈ្មោះនេះត្រូវគ្នាជាមួយកន្លែងហៅប្រើ)
+async def generate_assets(text_input, voice_name, rate_val):
     rate_str = f"{'+' if rate_val >= 1 else ''}{int((rate_val-1)*100)}%"
-    communicate = edge_tts.Communicate(text, voice_name, rate=rate_str)
+    communicate = edge_tts.Communicate(text_input, voice_name, rate=rate_str)
     
-    # បង្កើត SubMaker សម្រាប់ SRT
     sub_maker = submaker.SubMaker()
     audio_data = b""
     
@@ -32,14 +32,15 @@ async def generate_audio_and_srt(text, voice_name, rate_val):
         elif chunk["type"] == "WordBoundary":
             sub_maker.feed(chunk)
             
-    # កូដថ្មីសម្រាប់បង្កើត SRT format
     srt_content = sub_maker.generate_subs()
     return audio_data, srt_content
 
+# ៣. នៅពេលចុចប៊ូតុង
 if st.button("🚀 ចាប់ផ្ដើមដំណើរការ"):
     if text.strip():
         try:
-            with st.spinner('កំពុងដំណើរការ...'):
+            with st.spinner('កំពុងដំណើរការ... សូមរង់ចាំ'):
+                # ហៅប្រើមុខងារ generate_assets
                 audio_content, srt_content = asyncio.run(generate_assets(text, voice, speed))
                 
                 # បង្ហាញ Audio Player
@@ -53,9 +54,8 @@ if st.button("🚀 ចាប់ផ្ដើមដំណើរការ"):
                     st.download_button("📄 ទាញយក SRT", srt_content, "subtitle.srt", "text/plain")
                 
                 st.success("រួចរាល់ជោគជ័យ!")
-                st.text_area("មើលខ្លឹមសារ SRT:", srt_content, height=150)
+                st.text_area("ខ្លឹមសារ SRT ដែលបានបង្កើត:", srt_content, height=150)
         except Exception as e:
-            # បើនៅតែ Error ត្រង់ generate_subs យើងនឹងប្រើ logic បម្រុង
             st.error(f"បញ្ហាបច្ចេកទេស៖ {e}")
     else:
-        st.warning("សូមបញ្ចូលអត្ថបទ!")
+        st.warning("សូមបញ្ចូលអត្ថបទជាមុនសិន!")
