@@ -1,27 +1,25 @@
 import streamlit as st
 import asyncio
 import edge_tts
-from edge_tts import SubMaker
-import base64
+import os
 
-st.set_page_config(page_title="Khmer TTS & SRT Creator", page_icon="🎙️")
+st.set_page_config(page_title="Khmer SRT Generator", page_icon="🎙️")
 
-st.title("🎙️ Khmer TTS & SRT Generator")
+st.title("🎙️ Khmer SRT & MP3 Generator")
 
-# 1. កន្លែងបញ្ចូលអត្ថបទ
-text = st.text_area("បញ្ចូលអត្ថបទខ្មែរសម្រាប់បង្កើត SRT:", height=200)
+# ១. បញ្ចូលអត្ថបទ
+text = st.text_area("បញ្ចូលអត្ថបទខ្មែរសម្រាប់បង្កើត SRT:", height=150)
 
-# 2. ការកំណត់សំឡេង និងល្បឿន
+# ២. កំណត់សំឡេង និងល្បឿន
 col1, col2 = st.columns(2)
 with col1:
-    voice = st.selectbox("ជ្រើសរើសតួអង្គ:", 
-                        ["km-KH-SreymomNeural (ស្រី)", "km-KH-PisethNeural (ប្រុស)"])
+    voice = st.selectbox("ជ្រើសរើសតួអង្គ:", ["km-KH-SreymomNeural", "km-KH-PisethNeural"])
 with col2:
     speed = st.slider("ល្បឿនអាន:", 0.5, 2.0, 1.0, step=0.1)
 
-async def generate_assets(text, voice_name, rate):
+async def generate_assets(text, voice_name, rate_val):
     # បំលែងល្បឿនទៅជា format (+0%, -10%, etc.)
-    speed_str = f"{'+' if rate >= 1 else ''}{int((rate-1)*100)}%"
+    speed_str = f"{'+' if rate_val >= 1 else ''}{int((rate_val-1)*100)}%"
     
     communicate = edge_tts.Communicate(text, voice_name, rate=speed_str)
     submaker = edge_tts.SubMaker()
@@ -31,27 +29,29 @@ async def generate_assets(text, voice_name, rate):
         if chunk["type"] == "audio":
             audio_data += chunk["data"]
         elif chunk["type"] == "WordBoundary":
-            # ចាប់យកពេលវេលានៃពាក្យនីមួយៗសម្រាប់ SRT
             submaker.feed(chunk)
             
     return audio_data, submaker.generate_subs()
 
 if st.button("🚀 ចាប់ផ្ដើមដំណើរការ"):
-    if text:
-        with st.spinner('កំពុងបង្កើតសំឡេង និងឯកសារ SRT...'):
-            v_id = voice.split(' ')[0]
-            audio_content, srt_content = asyncio.run(generate_assets(text, v_id, speed))
-            
-            # 3. បង្ហាញលទ្ធផល និងនាទីរួចរាល់
-            st.audio(audio_content, format='audio/mp3')
-            
-            c1, c2 = st.columns(2)
-            with c1:
-                st.download_button("📥 ទាញយក MP3", audio_content, "audio.mp3", "audio/mp3")
-            with c2:
-                st.download_button("📄 ទាញយក SRT", srt_content, "subtitle.srt", "text/plain")
-            
-            st.success("រួចរាល់ ១០០%!")
-            st.text_area("មើលគំរូ SRT:", srt_content, height=150)
+    if text.strip():
+        try:
+            with st.spinner('កំពុងបង្កើតឯកសារ...'):
+                audio_content, srt_content = asyncio.run(generate_assets(text, voice, speed))
+                
+                # បង្ហាញ Audio Player
+                st.audio(audio_content, format='audio/mp3')
+                
+                # ប៊ូតុងទាញយក
+                c1, c2 = st.columns(2)
+                with c1:
+                    st.download_button("📥 ទាញយក MP3", audio_content, "khmer_voice.mp3", "audio/mp3")
+                with c2:
+                    st.download_button("📄 ទាញយក SRT", srt_content, "subtitle.srt", "text/plain")
+                
+                st.success("រួចរាល់ ១០០%!")
+                st.text_area("មើលគំរូ SRT:", srt_content, height=150)
+        except Exception as e:
+            st.error(f"កំហុសបច្ចេកទេស៖ {e}")
     else:
-        st.error("សូមបញ្ចូលអត្ថបទ!")
+        st.warning("សូមបញ្ចូលអត្ថបទ!")
