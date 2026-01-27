@@ -1,63 +1,92 @@
 import streamlit as st
 import asyncio
 import edge_tts
-from edge_tts import submaker
-import time
-import random
+import io
+import re
+from pydub import AudioSegment
+from datetime import datetime
 
-st.set_page_config(page_title="Khmer Sync Standard", layout="centered")
-st.title("🎙️ Khmer TTS & SRT (Sync 100%)")
+# --- កំណត់ទំព័រ ---
+st.set_page_config(page_title="Khmer TTS Pro", page_icon="🎙️")
 
-# ១. បញ្ចូលអត្ថបទ
-text = st.text_area("បញ្ចូលអត្ថបទខ្មែរ៖", height=150)
+# មុខងារបំប្លែងពេលវេលាពី SRT ទៅជា ms
+def srt_time_to_ms(time_str):
+    time_obj = datetime.strptime(time_str.strip().replace(',', '.'), '%H:%M:%S.%f')
+    return (time_obj.hour * 3600000) + (time_obj.minute * 60000) + (time_obj.second * 1000) + (time_obj.microsecond // 1000)
 
-col1, col2 = st.columns(2)
-with col1:
-    voice = st.selectbox("ជ្រើសរើសសំឡេង៖", ["km-KH-SreymomNeural", "km-KH-PisethNeural"])
-with col2:
-    speed = st.slider("ល្បឿនអាន៖", 0.5, 2.0, 1.0, step=0.1)
+# មុខងារទាញយកអត្ថបទពី SRT
+def parse_srt(srt_text):
+    pattern = r"(\d+)\s+(\d{2}:\d{2}:\d{2},\d{3}) --> (\d{2}:\d{2}:\d{2},\d{3})\s+(.*?)(?=\n\d+\s+|\Z)"
+    matches = re.findall(pattern, srt_text, re.DOTALL)
+    subtitles = []
+    for m in matches:
+        subtitles.append({
+            "start": srt_time_to_ms(m[1]),
+            "text": m[3].strip()
+        })
+    return subtitles
 
-async def generate_assets_safe(text_input, voice_name, rate_val):
-    rate_str = f"{'+' if rate_val >= 1.0 else ''}{int((rate_val - 1) * 100)}%"
+# --- មុខងារបង្កើតសំឡេង ---
+async def generate_srt_audio(subtitles, voice, rate, pitch):
+    combined_audio = AudioSegment.silent(duration=0)
+    current_time = 0
+
+    # បន្ថែម Rate និង Pitch ទៅក្នុងទម្រង់ edge-tts (+10%, -5%, etc.)
+    rate_str = f"{rate:+d}%"
+    pitch_str = f"{pitch:+d}Hz"
+
+    progress_bar = st.progress(0)
+    for i, sub in enumerate(subtitles):
+        # បង្កើតសំឡេងដោយមានកំណត់ល្បឿន
+        communicate = edge_tts.Communicate(sub["text"], voice, rate=rate_str, pitch=pitch_str)
+        temp_buffer = io.BytesIO()
+        async for chunk in communicate.stream():
+            if chunk["type"] == "audio":
+                temp_buffer.write(chunk["data"])
+        
+        temp_buffer.seek(0)
+        segment = AudioSegment.from_file(temp_buffer, format="mp3")
+
+        # គណនាចន្លោះស្ងាត់
+        wait_time = sub["start"] - current_time
+        if wait_time > 0:
+            combined_audio += AudioSegment.silent(duration=wait_time)
+        
+        combined_audio += segment
+        current_time = sub["start"] + len(segment)
+        progress_bar.progress((i + 1) / len(subtitles))
+
+    out_buffer = io.BytesIO()
+    combined_audio.export(out_buffer, format="mp3")
+    return out_buffer.getvalue()
+
+# --- UI Layout ---
+st.title("🎙️ កម្មវិធីអាន SRT កម្រិតខ្ពស់")
+
+with st.sidebar:
+    st.header("⚙️ ការកំណត់សំឡេង")
+    voice_choice = st.selectbox("ជ្រើសរើសសំឡេង:", ["ស្រីមុំ (Sreymom)", "ពិសិដ្ឋ (Piseth)"])
+    voice_id = "km-KH-SreymomNeural" if "ស្រីមុំ" in voice_choice else "km-KH-PisethNeural"
     
-    # បន្ថែមការបន្លំ User-Agent ដើម្បីកាត់បន្ថយការ Block 403
-    communicate = edge_tts.Communicate(text_input, voice_name, rate=rate_str)
-    sub_maker = submaker.SubMaker()
-    audio_data = b""
+    # បន្ថែម Slider សម្រាប់ល្បឿន
+    speed_rate = st.slider("ល្បឿនអាន (%)", min_value=-50, max_value=50, value=0, step=5)
+    pitch_val = st.slider("កម្រិតសំឡេង Pitch (Hz)", min_value=-20, max_value=20, value=0, step=1)
     
-    async for chunk in communicate.stream():
-        if chunk["type"] == "audio":
-            audio_data += chunk["data"]
-        elif chunk["type"] == "WordBoundary":
-            # នេះជាគន្លឹះដែលធ្វើឱ្យ SRT ដើរត្រូវមាត់និយាយ ១០០%
-            sub_maker.feed(chunk)
-            
-    return audio_data, sub_maker.generate_subs()
+    st.info("💡 ល្បឿន (+) លឿន, (-) យឺត")
 
-if st.button("🚀 ចាប់ផ្ដើមបម្លែង"):
-    if text.strip():
+srt_input = st.text_area("បិទភ្ជាប់អត្ថបទ SRT នៅទីនេះ:", height=250, placeholder="1\n00:00:01,000 --> 00:00:02,000\nសួស្តី...")
+
+if st.button("🚀 ចាប់ផ្តើមផលិតសំឡេង"):
+    if srt_input.strip():
         try:
-            with st.spinner('កំពុងទាក់ទង Cloud (សូមរង់ចាំបន្តិច)...'):
-                # បន្ថែមការឈប់សម្រាកបន្តិច ដើម្បីកុំឱ្យ Microsoft គិតថាជា Bot
-                time.sleep(random.uniform(1.0, 3.0))
-                
-                audio_content, srt_content = asyncio.run(generate_assets_safe(text, voice, speed))
-                
-                st.audio(audio_content, format='audio/mp3')
-                
-                c1, c2 = st.columns(2)
-                with c1:
-                    st.download_button("📥 MP3", audio_content, "audio.mp3")
-                with c2:
-                    st.download_button("📄 SRT", srt_content, "subtitle.srt")
-                
-                st.success("ជោគជ័យ! SRT ដើរត្រូវតាមមាត់និយាយហើយ។")
-                st.text_area("មាតិកា SRT:", srt_content, height=150)
-                
+            subs = parse_srt(srt_input)
+            if subs:
+                with st.spinner("កំពុងបំប្លែង..."):
+                    audio_data = asyncio.run(generate_srt_audio(subs, voice_id, speed_rate, pitch_val))
+                    st.success("សម្រេច! អ្នកអាចស្តាប់ និងទាញយកខាងក្រោម៖")
+                    st.audio(audio_data, format="audio/mp3")
+                    st.download_button("📥 ទាញយក MP3", audio_data, "khmer_subtitle_audio.mp3")
         except Exception as e:
-            if "403" in str(e):
-                st.error("Error 403: Cloud កំពុងរឹតបន្តឹង។ សូមរង់ចាំ ១០ វិនាទី រួចចុចម្ដងទៀត។")
-            else:
-                st.error(f"បញ្ហា៖ {e}")
+            st.error(f"កំហុសបច្ចេកទេស៖ {e}")
     else:
-        st.warning("សូមបញ្ចូលអត្ថបទ!")
+        st.warning("សូមបញ្ចូលអត្ថបទជាមុនសិន!")
