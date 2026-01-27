@@ -3,64 +3,73 @@ import asyncio
 import edge_tts
 import io
 import re
+from pydub import AudioSegment
 from datetime import datetime
 
 # --- កំណត់ទំព័រ ---
-st.set_page_config(page_title="Khmer TTS Perfect Sync", page_icon="🎙️")
+st.set_page_config(page_title="Khmer Perfect Sync TTS", page_icon="🎙️")
 
-# មុខងារបំប្លែងពេលវេលាពី SRT ទៅជា វិនាទី (Seconds)
-def srt_time_to_seconds(time_str):
+def srt_time_to_ms(time_str):
     time_obj = datetime.strptime(time_str.strip().replace(',', '.'), '%H:%M:%S.%f')
-    return (time_obj.hour * 3600) + (time_obj.minute * 60) + time_obj.second + (time_obj.microsecond / 1000000)
+    return (time_obj.hour * 3600000) + (time_obj.minute * 60000) + (time_obj.second * 1000) + (time_obj.microsecond // 1000)
 
-# មុខងារទាញយកទិន្នន័យពី SRT
 def parse_srt(srt_text):
-    pattern = r"(\d+)\s+(\d{2}:\d{2}:\d{2},\d{3}) --> (\d{2}:\d{2}:\d{2},\d{3})\s+(.*?)(?=\n\d+\s+|\Z)"
+    # Regex ដើម្បីទាញយកតែ ពេលវេលា និង អត្ថបទ (លុបលេខរៀងចេញ)
+    pattern = r"(\d{2}:\d{2}:\d{2},\d{3}) --> (\d{2}:\d{2}:\d{2},\d{3})\s+(.*?)(?=\n\d{2}:\d{2}:\d{2},\d{3}|\n\n\d+|$)"
     matches = re.findall(pattern, srt_text, re.DOTALL)
+    
     subtitles = []
     for m in matches:
-        subtitles.append({
-            "start": srt_time_to_seconds(m[1]),
-            "text": m[3].replace('\n', ' ').strip()
-        })
+        text_only = m[2].strip()
+        if text_only:
+            subtitles.append({
+                "start": srt_time_to_ms(m[0]),
+                "text": text_only
+            })
     return subtitles
 
-# --- មុខងារបង្កើតសំឡេងប្រើ SSML ដែលកំណត់ពេលបានច្បាស់ ---
-async def generate_perfect_sync(subtitles, voice, rate, pitch):
+async def generate_perfect_audio(subtitles, voice, rate, pitch):
+    # បង្កើត Audio ទទេជាមូលដ្ឋាន
+    combined = AudioSegment.silent(duration=0)
+    
     rate_str = f"{rate:+d}%"
     pitch_str = f"{pitch:+d}Hz"
     
-    # ប្រើ SSML ដើម្បីបញ្ជាឱ្យ AI បង្អង់តាមវិនាទីជាក់លាក់
-    ssml_parts = ["<speak version='1.0' xmlns='http://www.w3.org/2001/10/synthesis' xml:lang='km-KH'>"]
+    progress_bar = st.progress(0)
     
-    current_time = 0
-    for sub in subtitles:
-        # គណនាចន្លោះដែលត្រូវសម្រាក (Silence)
-        wait_time = sub["start"] - current_time
-        if wait_time > 0:
-            # បញ្ជាឱ្យផ្អាកចំចំនួនវិនាទីដែលខ្វះ
-            ssml_parts.append(f"<break time='{int(wait_time * 1000)}ms'/>")
+    for i, sub in enumerate(subtitles):
+        # ១. បង្កើតសំឡេងអាន (អានតែអត្ថបទ មិនអានលេខ ឬ Tag)
+        communicate = edge_tts.Communicate(sub["text"], voice, rate=rate_str, pitch=pitch_str)
+        temp_buf = io.BytesIO()
+        async for chunk in communicate.stream():
+            if chunk["type"] == "audio":
+                temp_buf.write(chunk["data"])
         
-        # បញ្ចូលអត្ថបទអាន
-        ssml_parts.append(f"<prosody rate='{rate_str}' pitch='{pitch_str}'>{sub['text']}</prosody>")
-        
-        # យើងប៉ាន់ស្មានថាការអានប្រើពេលខ្លីបំផុត ដើម្បីគណនាសម្រាប់ឃ្លាបន្ទាប់
-        # កូដនេះនឹងរុញពេលវេលាទៅមុខតាមសាច់អត្ថបទជាក់ស្តែង
-        current_time = sub["start"] + 0.5 
+        temp_buf.seek(0)
+        segment = AudioSegment.from_file(temp_buf, format="mp3")
 
-    ssml_parts.append("</speak>")
-    ssml_string = "".join(ssml_parts)
-    
-    communicate = edge_tts.Communicate(ssml_string, voice)
-    audio_data = b""
-    async for chunk in communicate.stream():
-        if chunk["type"] == "audio":
-            audio_data += chunk["data"]
-    return audio_data
+        # ២. គណនាចន្លោះស្ងាត់ដើម្បីឱ្យត្រូវនឹងវិនាទីចាប់ផ្ដើម
+        current_len = len(combined)
+        silence_needed = sub["start"] - current_len
+        
+        if silence_needed > 0:
+            combined += AudioSegment.silent(duration=silence_needed)
+        
+        # ៣. បន្ថែមសំឡេងអានចូលចំទីតាំង (ប្រើ Overlay ដើម្បីធានាភាពសុក្រឹត)
+        combined = combined.overlay(segment, position=sub["start"])
+        
+        # ពង្រីកប្រវែង Audio សរុបប្រសិនបើសំឡេងអានវែងជាង
+        if len(combined) < sub["start"] + len(segment):
+            combined += AudioSegment.silent(duration=(sub["start"] + len(segment)) - len(combined))
+            
+        progress_bar.progress((i + 1) / len(subtitles))
+
+    out_buf = io.BytesIO()
+    combined.export(out_buf, format="mp3")
+    return out_buf.getvalue()
 
 # --- UI ---
-st.title("🎙️ កម្មវិធីអានតាមវិនាទី SRT (Fixed)")
-st.info("កូដនេះនឹងអានតាមពេលវេលាដែលអ្នកកំណត់ក្នុង SRT ដោយស្វ័យប្រវត្តិ។")
+st.title("🎙️ Khmer TTS Perfect Sync (No Tags)")
 
 with st.sidebar:
     st.header("⚙️ ការកំណត់")
@@ -71,17 +80,17 @@ with st.sidebar:
 
 srt_input = st.text_area("បិទភ្ជាប់អត្ថបទ SRT នៅទីនេះ:", height=300)
 
-if st.button("🚀 ចាប់ផ្តើមផលិតសំឡេង Sync"):
+if st.button("🚀 ចាប់ផ្តើមផលិតសំឡេង"):
     if srt_input.strip():
-        with st.spinner("កំពុងផលិតសំឡេងឱ្យត្រូវតាមវិនាទី..."):
-            try:
-                subs = parse_srt(srt_input)
-                if subs:
-                    audio_bytes = asyncio.run(generate_perfect_sync(subs, voice_id, speed_rate, pitch_val))
-                    st.success("ផលិតបានជោគជ័យ!")
-                    st.audio(audio_bytes, format="audio/mp3")
-                    st.download_button("📥 ទាញយក MP3", audio_bytes, "khmer_sync.mp3")
-                else:
-                    st.error("ទម្រង់ SRT មិនត្រឹមត្រូវ!")
-            except Exception as e:
-                st.error(f"មានបញ្ហា៖ {e}")
+        try:
+            subs = parse_srt(srt_input)
+            if not subs:
+                st.error("រកមិនឃើញទម្រង់ SRT ត្រឹមត្រូវទេ!")
+            else:
+                with st.spinner("កំពុងរៀបចំសំឡេងតាមវិនាទី..."):
+                    audio_data = asyncio.run(generate_perfect_audio(subs, voice_id, speed_rate, pitch_val))
+                    st.success("រួចរាល់! សំឡេងនឹងអានចំពេល និងមិនអានលេខរៀងឡើយ។")
+                    st.audio(audio_data, format="audio/mp3")
+                    st.download_button("📥 ទាញយក MP3", audio_data, "khmer_subtitle_sync.mp3")
+        except Exception as e:
+            st.error(f"កំហុស៖ {e}")
