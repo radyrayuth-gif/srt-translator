@@ -1,39 +1,57 @@
 import streamlit as st
 import asyncio
 import edge_tts
-import os
+from edge_tts import SubMaker
+import base64
 
-st.set_page_config(page_title="Khmer Standard TTS", page_icon="🎙️")
+st.set_page_config(page_title="Khmer TTS & SRT Creator", page_icon="🎙️")
 
-st.title("🇰🇭 កម្មវិធីបម្លែងសំឡេងខ្មែរ (ស្តង់ដា)")
+st.title("🎙️ Khmer TTS & SRT Generator")
 
-# ១. កន្លែងដាក់អត្ថបទ
-text = st.text_area("បញ្ចូលអត្ថបទខ្មែរ៖", height=150)
+# 1. កន្លែងបញ្ចូលអត្ថបទ
+text = st.text_area("បញ្ចូលអត្ថបទខ្មែរសម្រាប់បង្កើត SRT:", height=200)
 
-# ២. ជ្រើសរើសតួអង្គ និងល្បឿន
+# 2. ការកំណត់សំឡេង និងល្បឿន
 col1, col2 = st.columns(2)
 with col1:
-    voice = st.selectbox("ជ្រើសរើសសំឡេង៖", 
+    voice = st.selectbox("ជ្រើសរើសតួអង្គ:", 
                         ["km-KH-SreymomNeural (ស្រី)", "km-KH-PisethNeural (ប្រុស)"])
 with col2:
-    speed = st.slider("ល្បឿនអាន៖", 0.5, 2.0, 1.0, step=0.1)
+    speed = st.slider("ល្បឿនអាន:", 0.5, 2.0, 1.0, step=0.1)
 
-# បង្កើត Function សម្រាប់បម្លែងសំឡេង
-async def generate_audio(text, voice, rate):
-    # កែសម្រួលល្បឿន (Format: +10% ឬ -10%)
+async def generate_assets(text, voice_name, rate):
+    # បំលែងល្បឿនទៅជា format (+0%, -10%, etc.)
     speed_str = f"{'+' if rate >= 1 else ''}{int((rate-1)*100)}%"
-    communicate = edge_tts.Communicate(text, voice.split(' ')[0], rate=speed_str)
-    await communicate.save("output.mp3")
-
-if st.button("🔊 ចាប់ផ្ដើមបម្លែង"):
-    if text:
-        with st.spinner('កំពុងបង្កើតសំឡេង...'):
-            asyncio.run(generate_audio(text, voice, speed))
+    
+    communicate = edge_tts.Communicate(text, voice_name, rate=speed_str)
+    submaker = edge_tts.SubMaker()
+    
+    audio_data = b""
+    async for chunk in communicate.stream():
+        if chunk["type"] == "audio":
+            audio_data += chunk["data"]
+        elif chunk["type"] == "WordBoundary":
+            # ចាប់យកពេលវេលានៃពាក្យនីមួយៗសម្រាប់ SRT
+            submaker.feed(chunk)
             
-            # ៣. បង្ហាញ Audio និងប៊ូតុង Download
-            st.audio("output.mp3")
-            with open("output.mp3", "rb") as f:
-                st.download_button("📥 ទាញយក MP3", f, "khmer_audio.mp3")
-            st.success("រួចរាល់!")
+    return audio_data, submaker.generate_subs()
+
+if st.button("🚀 ចាប់ផ្ដើមដំណើរការ"):
+    if text:
+        with st.spinner('កំពុងបង្កើតសំឡេង និងឯកសារ SRT...'):
+            v_id = voice.split(' ')[0]
+            audio_content, srt_content = asyncio.run(generate_assets(text, v_id, speed))
+            
+            # 3. បង្ហាញលទ្ធផល និងនាទីរួចរាល់
+            st.audio(audio_content, format='audio/mp3')
+            
+            c1, c2 = st.columns(2)
+            with c1:
+                st.download_button("📥 ទាញយក MP3", audio_content, "audio.mp3", "audio/mp3")
+            with c2:
+                st.download_button("📄 ទាញយក SRT", srt_content, "subtitle.srt", "text/plain")
+            
+            st.success("រួចរាល់ ១០០%!")
+            st.text_area("មើលគំរូ SRT:", srt_content, height=150)
     else:
-        st.error("សូមបញ្ចូលអត្ថបទជាមុនសិន!")
+        st.error("សូមបញ្ចូលអត្ថបទ!")
