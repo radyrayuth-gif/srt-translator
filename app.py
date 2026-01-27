@@ -2,51 +2,67 @@ import streamlit as st
 import asyncio
 import edge_tts
 import re
-import base64
+import io
+from pydub import AudioSegment
 
-st.set_page_config(page_title="Khmer SRT Sync Pro", page_icon="🎙️")
+st.set_page_config(page_title="Khmer Voice Sync Pro", page_icon="🎙️")
 
-async def get_audio_data(text, voice):
+# ១. មុខងារបំប្លែងម៉ោង SRT ទៅជាមីលីវិនាទី (ms)
+def time_to_ms(time_str):
+    h, m, s = time_str.replace(',', '.').split(':')
+    return int((int(h) * 3600 + int(m) * 60 + float(s)) * 1000)
+
+# ២. មុខងារផលិតសំឡេងដុំៗ
+async def get_audio_segment(text, voice):
     communicate = edge_tts.Communicate(text, voice)
     audio_data = b""
     async for chunk in communicate.stream():
         if chunk["type"] == "audio":
             audio_data += chunk["data"]
-    return audio_data
+    return AudioSegment.from_file(io.BytesIO(audio_data), format="mp3")
 
-def parse_srt(srt_text):
-    blocks = re.split(r'\n\s*\n', srt_text.strip())
-    subtitles = []
-    for block in blocks:
-        lines = block.strip().split('\n')
-        time_line = next((l for l in lines if "-->" in l), None)
-        text_lines = [l.strip() for l in lines if "-->" not in l and not l.strip().isdigit()]
-        if time_line and text_lines:
-            start_time = time_line.split("-->")[0].strip()
-            subtitles.append({"time": start_time, "text": " ".join(text_lines)})
-    return subtitles
-
-st.title("🎙️ Khmer SRT Sync Pro")
-st.write("ផលិតសំឡេងខ្មែរឱ្យចំវិនាទី SRT (ដូច VoiceRTool)")
+st.title("🎙️ Khmer Voice Sync (ដូច VoiceRTool)")
+st.write("បិទភ្ជាប់ SRT រួចទាញយក File MP3 ដែល Sync រួចជាស្រេច")
 
 voice_id = st.sidebar.selectbox("ជ្រើសរើសសំឡេង:", ["km-KH-SreymomNeural", "km-KH-PisethNeural"])
-srt_input = st.text_area("បិទភ្ជាប់ SRT របស់អ្នកទីនេះ:", height=300)
+srt_input = st.text_area("បិទភ្ជាប់អត្ថបទ SRT ទីនេះ:", height=300)
 
-if st.button("🚀 ចាប់ផ្ដើមផលិត"):
+if st.button("🚀 ចាប់ផ្ដើមផលិត File រួមគ្នា"):
     if srt_input:
-        subs = parse_srt(srt_input)
-        st.subheader("លទ្ធផលសម្រេច")
-        
-        for sub in subs:
-            with st.expander(f"⏰ {sub['time']} - {sub['text'][:30]}..."):
-                audio_bytes = asyncio.run(get_audio_data(sub['text'], voice_id))
-                if audio_bytes:
-                    # បង្ហាញសំឡេង និងប៊ូតុងទាញយកសម្រាប់ដុំនីមួយៗ
-                    st.audio(audio_bytes, format="audio/mp3")
-                    b64 = base64.b64encode(audio_bytes).decode()
-                    href = f'<a href="data:audio/mp3;base64,{b64}" download="audio_{sub["time"].replace(":","-")}.mp3">📥 ទាញយកដុំនេះ</a>'
-                    st.markdown(href, unsafe_allow_html=True)
-        
-        st.success("រួចរាល់! អ្នកអាចទាញយកដុំសំឡេងតាមនាទីនីមួយៗ រួចយកទៅដាក់ក្នុង CapCut នោះវានឹងចំគ្នា ១០០%។")
+        with st.spinner("កំពុងផលិត និងបញ្ចូលសំឡេងតាមនាទី..."):
+            # ច្រោះយកម៉ោង និងអត្ថបទ
+            blocks = re.split(r'\n\s*\n', srt_input.strip())
+            final_audio = AudioSegment.silent(duration=0)
+            
+            for block in blocks:
+                lines = block.strip().split('\n')
+                time_line = next((l for l in lines if "-->" in l), None)
+                text_lines = [l.strip() for l in lines if "-->" not in l and not l.strip().isdigit()]
+                
+                if time_line and text_lines:
+                    start_time_str = time_line.split("-->")[0].strip()
+                    start_ms = time_to_ms(start_time_str)
+                    text = " ".join(text_lines)
+                    
+                    # ផលិតសំឡេងដុំ
+                    segment = asyncio.run(get_audio_segment(text, voice_id))
+                    
+                    # បន្ថែមភាពស្ងាត់បើមិនទាន់ដល់ម៉ោងអាន
+                    if len(final_audio) < start_ms:
+                        final_audio += AudioSegment.silent(duration=start_ms - len(final_audio))
+                    
+                    # ដាក់សំឡេងចូលក្នុង Timeline
+                    final_audio = final_audio.overlay(segment, position=start_ms)
+
+            # Export ជា File តែមួយ
+            out_buffer = io.BytesIO()
+            final_audio.export(out_buffer, format="mp3")
+            out_buffer.seek(0)
+            audio_bytes = out_buffer.read()
+
+            if audio_bytes:
+                st.audio(audio_bytes, format="audio/mp3")
+                st.download_button("📥 ទាញយក File MP3 ដែល Sync រួច", audio_bytes, "khmer_sync_audio.mp3")
+                st.success("ជោគជ័យ! សំឡេងអានត្រូវតាមនាទី SRT ទាំងអស់។")
     else:
-        st.warning("សូមបញ្ចូល SRT ជាមុនសិន!")
+        st.warning("សូមបញ្ចូល SRT!")
