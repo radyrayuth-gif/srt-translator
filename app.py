@@ -1,19 +1,19 @@
-# បង្កើត Buffer ថ្មី
-buffer = io.BytesIO()
+                # រក្សាទុកក្នុង Memory ដើម្បី Download
+                buffer = io.BytesIO()
+                
+                # បង្ខំឱ្យ Export ជា MP3 ជាមួយ Bitrate ត្រឹមត្រូវ
+                final_audio.export(buffer, format="mp3")
+                
+                # កំណត់ Pointer មកដើមវិញ ដើម្បីឱ្យ Streamlit អានទិន្នន័យបាន
+                buffer.seek(0)
+                audio_data = buffer.getvalue()
 
-# បញ្ជាក់ឱ្យច្បាស់ពី Format និងតម្រូវឱ្យវា Export ឱ្យចប់សព្វគ្រប់
-final_audio.export(buffer, format="mp3", parameters=["-q:a", "0"])
-
-# កំណត់ Pointer របស់ Buffer មកដើមវិញ (សំខាន់ខ្លាំង)
-buffer.seek(0)
-
-# បង្ហាញ Player និងប៊ូតុង Download
-audio_bytes = buffer.read()
-st.audio(audio_bytes, format="audio/mp3")
-
-st.download_button(
-    label="📥 ទាញយកឯកសារសំឡេង (.mp3)",
-    data=audio_bytes,
-    file_name=f"khmer_audio_{datetime.now().strftime('%Y%m%d_%H%M%S')}.mp3",
-    mime="audio/mp3"
-)
+                # បង្ហាញ Player និងប៊ូតុង Download
+                if audio_data:
+                    st.audio(audio_data, format="audio/mp3")
+                    st.download_button(
+                        label="📥 ទាញយកឯកសារសំឡេង (.mp3)",
+                        data=audio_data,
+                        file_name=f"khmer_sync_{datetime.now().strftime('%H%M%S')}.mp3",
+                        mime="audio/mp3"
+                    )
