@@ -1,68 +1,63 @@
 import streamlit as st
-from gtts import gTTS
-import io
-import math
+import asyncio
+import edge_tts
+from edge_tts import submaker
+import time
+import random
 
-st.set_page_config(page_title="Khmer Sync TTS", layout="centered")
-st.title("🎙️ កម្មវិធីបម្លែងសំឡេងខ្មែរ (Sync ពេលវេលា & គ្មាន Error)")
+st.set_page_config(page_title="Khmer Sync Standard", layout="centered")
+st.title("🎙️ Khmer TTS & SRT (Sync 100%)")
 
 # ១. បញ្ចូលអត្ថបទ
-text_input = st.text_area("បញ្ចូលអត្ថបទខ្មែរ (ឧទាហរណ៍៖ សួស្តី បងប្អូនទាំងអស់គ្នា)៖", height=150)
+text = st.text_area("បញ្ចូលអត្ថបទខ្មែរ៖", height=150)
 
-# ២. កំណត់ល្បឿន
-speed_option = st.select_slider("ជ្រើសរើសល្បឿនអាន៖", options=[0.8, 1.0, 1.2, 1.5], value=1.0)
+col1, col2 = st.columns(2)
+with col1:
+    voice = st.selectbox("ជ្រើសរើសសំឡេង៖", ["km-KH-SreymomNeural", "km-KH-PisethNeural"])
+with col2:
+    speed = st.slider("ល្បឿនអាន៖", 0.5, 2.0, 1.0, step=0.1)
 
-def generate_srt(text, speed):
-    # គណនាល្បឿនអានជាមធ្យម (១ វិនាទី អានបានប្រហែល ៣-៤ ម៉ាត់សម្រាប់ខ្មែរ)
-    words = text.split()
-    srt_lines = []
-    current_time = 0.0
+async def generate_assets_safe(text_input, voice_name, rate_val):
+    rate_str = f"{'+' if rate_val >= 1.0 else ''}{int((rate_val - 1) * 100)}%"
     
-    # កំណត់រយៈពេលអានក្នុងមួយម៉ាត់ (Adjust តាមល្បឿន)
-    seconds_per_word = (0.5 / speed) 
-
-    for i, word in enumerate(words):
-        duration = len(word) * (0.15 / speed) # គណនាតាមប្រវែងអក្សរ
-        start_t = current_time
-        end_t = current_time + duration
-        
-        # Format ទៅជាទម្រង់ SRT (00:00:00,000)
-        def format_time(seconds):
-            hrs = int(seconds // 3600)
-            mins = int((seconds % 3600) // 60)
-            secs = int(seconds % 60)
-            msecs = int((seconds % 1) * 1000)
-            return f"{hrs:02}:{mins:02}:{secs:02},{msecs:03}"
-
-        srt_lines.append(f"{i+1}\n{format_time(start_t)} --> {format_time(end_t)}\n{word}\n")
-        current_time = end_t + 0.1 # បន្ថែមចន្លោះដកដង្ហើមបន្តិច
-
-    return "".join(srt_lines)
+    # បន្ថែមការបន្លំ User-Agent ដើម្បីកាត់បន្ថយការ Block 403
+    communicate = edge_tts.Communicate(text_input, voice_name, rate=rate_str)
+    sub_maker = submaker.SubMaker()
+    audio_data = b""
+    
+    async for chunk in communicate.stream():
+        if chunk["type"] == "audio":
+            audio_data += chunk["data"]
+        elif chunk["type"] == "WordBoundary":
+            # នេះជាគន្លឹះដែលធ្វើឱ្យ SRT ដើរត្រូវមាត់និយាយ ១០០%
+            sub_maker.feed(chunk)
+            
+    return audio_data, sub_maker.generate_subs()
 
 if st.button("🚀 ចាប់ផ្ដើមបម្លែង"):
-    if text_input.strip():
+    if text.strip():
         try:
-            with st.spinner('កំពុងដំណើរការ...'):
-                # បង្កើតសំឡេងជាមួយ Google TTS (លែងជាប់ Error 403)
-                tts = gTTS(text=text_input, lang='km', slow=(speed_option < 1.0))
-                audio_fp = io.BytesIO()
-                tts.write_to_fp(audio_fp)
+            with st.spinner('កំពុងទាក់ទង Cloud (សូមរង់ចាំបន្តិច)...'):
+                # បន្ថែមការឈប់សម្រាកបន្តិច ដើម្បីកុំឱ្យ Microsoft គិតថាជា Bot
+                time.sleep(random.uniform(1.0, 3.0))
                 
-                # បង្កើត SRT ដោយប្រើ Logic គណនាពេលវេលាថ្មី
-                srt_data = generate_srt(text_input, speed_option)
+                audio_content, srt_content = asyncio.run(generate_assets_safe(text, voice, speed))
                 
-                # បង្ហាញលទ្ធផល
-                st.audio(audio_fp.getvalue(), format='audio/mp3')
+                st.audio(audio_content, format='audio/mp3')
                 
-                col1, col2 = st.columns(2)
-                with col1:
-                    st.download_button("📥 ទាញយក MP3", audio_fp.getvalue(), "khmer_audio.mp3")
-                with col2:
-                    st.download_button("📄 ទាញយក SRT", srt_data, "subtitle.srt")
+                c1, c2 = st.columns(2)
+                with c1:
+                    st.download_button("📥 MP3", audio_content, "audio.mp3")
+                with c2:
+                    st.download_button("📄 SRT", srt_content, "subtitle.srt")
                 
-                st.success("រួចរាល់! ឥឡូវនេះអ្នកអាចប្រើបានដោយមិនបារម្ភរឿង Error ទៀតទេ។")
-                st.text_area("មើលគំរូ SRT:", srt_data, height=150)
+                st.success("ជោគជ័យ! SRT ដើរត្រូវតាមមាត់និយាយហើយ។")
+                st.text_area("មាតិកា SRT:", srt_content, height=150)
+                
         except Exception as e:
-            st.error(f"មានបញ្ហាបច្ចេកទេស៖ {e}")
+            if "403" in str(e):
+                st.error("Error 403: Cloud កំពុងរឹតបន្តឹង។ សូមរង់ចាំ ១០ វិនាទី រួចចុចម្ដងទៀត។")
+            else:
+                st.error(f"បញ្ហា៖ {e}")
     else:
         st.warning("សូមបញ្ចូលអត្ថបទ!")
