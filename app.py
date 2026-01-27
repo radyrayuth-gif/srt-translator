@@ -2,7 +2,7 @@ import streamlit as st
 import asyncio
 import edge_tts
 import re
-import io
+import io      # បន្ថែមជួរនេះដើម្បីដោះស្រាយ NameError
 import base64
 from datetime import datetime
 from pydub import AudioSegment
@@ -38,8 +38,6 @@ async def generate_audio_segment(text, voice, rate):
     return AudioSegment.from_file(io.BytesIO(audio_data), format="mp3")
 
 st.title("🎙️ Khmer TTS: Perfect Sync")
-st.write("ផលិតសំឡេងខ្មែរតាមវិនាទី SRT និងទាញយកជា File តែមួយ។")
-
 st.sidebar.header("ការកំណត់")
 voice_id = st.sidebar.selectbox("ជ្រើសរើសសំឡេង:", ["km-KH-SreymomNeural", "km-KH-PisethNeural"])
 speed = st.sidebar.slider("ល្បឿននិយាយ (%)", min_value=-50, max_value=50, value=0, step=5)
@@ -49,7 +47,7 @@ if st.button("🚀 ផលិត និងទាញយកសំឡេង"):
     if srt_input:
         subs = parse_srt_to_list(srt_input)
         if subs:
-            with st.spinner("កំពុងដំណើរការផលិតសំឡេង..."):
+            with st.spinner("កំពុងផលិតសំឡេង..."):
                 final_audio = AudioSegment.silent(duration=0)
                 for sub in subs:
                     segment = asyncio.run(generate_audio_segment(sub["text"], voice_id, speed))
@@ -58,9 +56,10 @@ if st.button("🚀 ផលិត និងទាញយកសំឡេង"):
                         final_audio += AudioSegment.silent(duration=start_ms - len(final_audio))
                     final_audio = final_audio.overlay(segment, position=start_ms)
                 
+                # ដំណោះស្រាយសំខាន់បំផុតដើម្បីឱ្យឮសំឡេង៖
                 buffer = io.BytesIO()
                 final_audio.export(buffer, format="mp3")
-                buffer.seek(0)
+                buffer.seek(0) # ត្រូវតែត្រឡប់ Pointer មកដើមវិញដើម្បីឱ្យ Streamlit អានទិន្នន័យបាន
                 audio_bytes = buffer.read()
                 
                 if audio_bytes:
@@ -71,8 +70,6 @@ if st.button("🚀 ផលិត និងទាញយកសំឡេង"):
                         file_name=f"khmer_audio_{datetime.now().strftime('%H%M%S')}.mp3",
                         mime="audio/mp3"
                     )
-                    st.success("រួចរាល់! សូមចុចប៊ូតុងខាងលើដើម្បីទាញយក។")
+                    st.success("រួចរាល់!")
         else:
             st.error("ទម្រង់ SRT មិនត្រឹមត្រូវ!")
-    else:
-        st.warning("សូមបញ្ចូលអត្ថបទ SRT ជាមុនសិន។")
