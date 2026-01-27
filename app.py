@@ -2,41 +2,32 @@ import streamlit as st
 import asyncio
 import edge_tts
 import io
-import re
 
-st.set_page_config(page_title="Khmer TTS Stable", page_icon="🎙️")
+st.set_page_config(page_title="Khmer TTS Final", page_icon="🎙️")
 
-def parse_srt(srt_text):
-    # Regex នេះនឹងយកតែអត្ថបទ មិនយកលេខរៀង 1, 2, 3 មកអានទេ
-    pattern = r"\d{2}:\d{2}:\d{2},\d{3} --> \d{2}:\d{2}:\d{2},\d{3}\s+(.*?)(?=\n\d+|$)"
-    matches = re.findall(pattern, srt_text, re.DOTALL)
-    return [m.strip() for m in matches if m.strip()]
+async def text_to_speech(text, voice):
+    # បង្កើតសំឡេងដោយផ្ទាល់ពីអត្ថបទ (មិនបាច់មាន Regex ស្មុគស្មាញ)
+    communicate = edge_tts.Communicate(text, voice)
+    audio_data = b""
+    async for chunk in communicate.stream():
+        if chunk["type"] == "audio":
+            audio_data += chunk["data"]
+    return audio_data
 
-async def generate_audio(texts, voice):
-    combined_audio = b""
-    for text in texts:
-        # បង្កើតសំឡេងម្ដងមួយឃ្លា រួចបូកបញ្ចូលគ្នាជា Bytes
-        communicate = edge_tts.Communicate(text, voice)
-        async for chunk in communicate.stream():
-            if chunk["type"] == "audio":
-                combined_audio += chunk["data"]
-    return combined_audio
+st.title("🎙️ កម្មវិធីអានខ្មែរ (Safe Mode)")
 
-st.title("🎙️ កម្មវិធីអានខ្មែរ (ជំនាន់គ្មាន Error)")
-
-voice_id = st.sidebar.selectbox("ជ្រើសរើសសំឡេង:", ["km-KH-SreymomNeural", "km-KH-PisethNeural"])
-srt_input = st.text_area("បិទភ្ជាប់ SRT របស់អ្នកនៅទីនេះ:", height=300)
+voice_id = st.selectbox("ជ្រើសរើសសំឡេង:", ["km-KH-SreymomNeural", "km-KH-PisethNeural"])
+text_input = st.text_area("បញ្ចូលអត្ថបទរបស់អ្នកនៅទីនេះ (អាចជា SRT ឬអត្ថបទធម្មតា):", height=200)
 
 if st.button("🚀 ចាប់ផ្ដើមផលិត"):
-    if srt_input:
+    if text_input:
         try:
-            texts = parse_srt(srt_input)
-            if texts:
-                with st.spinner("កំពុងផលិត..."):
-                    audio_data = asyncio.run(generate_audio(texts, voice_id))
-                    st.audio(audio_data, format="audio/mp3")
-                    st.download_button("📥 ទាញយក", audio_data, "khmer_voice.mp3")
-            else:
-                st.error("ទម្រង់ SRT មិនត្រឹមត្រូវ!")
+            # លុបលេខ និង Tag ចេញតាមវិធីសាមញ្ញបំផុត
+            clean_text = "".join([line for line in text_input.splitlines() if "-->" not in line and not line.strip().isdigit()])
+            
+            with st.spinner("កំពុងដំណើរការ..."):
+                audio_bytes = asyncio.run(text_to_speech(clean_text, voice_id))
+                st.audio(audio_bytes, format="audio/mp3")
+                st.download_button("📥 ទាញយក", audio_bytes, "voice.mp3")
         except Exception as e:
             st.error(f"កំហុស៖ {e}")
