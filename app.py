@@ -11,12 +11,14 @@ st.set_page_config(page_title="Khmer Perfect Sync", page_icon="🎙️")
 
 def srt_time_to_seconds(time_str):
     try:
+        # បំប្លែងពេលវេលាពី SRT ទៅជាវិនាទី
         time_obj = datetime.strptime(time_str.strip().replace(',', '.'), '%H:%M:%S.%f')
         return (time_obj.hour * 3600) + (time_obj.minute * 60) + time_obj.second + (time_obj.microsecond / 1000000)
     except:
         return 0
 
 def parse_srt_to_list(srt_text):
+    # ច្រោះយកអត្ថបទ និងម៉ោងចាប់ផ្ដើម
     blocks = re.split(r'\n\s*\n', srt_text.strip())
     subtitles = []
     for block in blocks:
@@ -29,6 +31,7 @@ def parse_srt_to_list(srt_text):
     return subtitles
 
 async def generate_audio_segment(text, voice, rate):
+    # ផលិតសំឡេងតាមរយៈ Edge TTS
     rate_str = f"{rate:+d}%"
     communicate = edge_tts.Communicate(text, voice, rate=rate_str)
     audio_data = b""
@@ -39,27 +42,36 @@ async def generate_audio_segment(text, voice, rate):
 
 st.title("🎙️ Khmer TTS: Perfect Sync")
 
+# Sidebar Settings
 st.sidebar.header("ការកំណត់")
 voice_id = st.sidebar.selectbox("ជ្រើសរើសសំឡេង:", ["km-KH-SreymomNeural", "km-KH-PisethNeural"])
 speed = st.sidebar.slider("ល្បឿននិយាយ (%)", min_value=-50, max_value=50, value=0, step=5)
+
 srt_input = st.text_area("បិទភ្ជាប់អត្ថបទ SRT ទីនេះ:", height=250)
 
 if st.button("🚀 ផលិត និងទាញយកសំឡេង"):
     if srt_input:
         subs = parse_srt_to_list(srt_input)
         if subs:
-            with st.spinner("កំពុងផលិតសំឡេង..."):
+            with st.spinner("កំពុងផលិតសំឡេង... សូមរង់ចាំ"):
                 final_audio = AudioSegment.silent(duration=0)
+                
                 for sub in subs:
+                    # បង្កើតសំឡេងម្នាក់ៗ
                     segment = asyncio.run(generate_audio_segment(sub["text"], voice_id, speed))
                     start_ms = int(sub["start"] * 1000)
+                    
+                    # បន្ថែម Silence បើដល់ម៉ោងត្រូវនិយាយ
                     if len(final_audio) < start_ms:
                         final_audio += AudioSegment.silent(duration=start_ms - len(final_audio))
+                    
+                    # ដាក់សំឡេងចូលក្នុង Timeline
                     final_audio = final_audio.overlay(segment, position=start_ms)
                 
+                # --- វគ្គ Export ឱ្យឮសំឡេង ---
                 buffer = io.BytesIO()
                 final_audio.export(buffer, format="mp3")
-                buffer.seek(0)
+                buffer.seek(0)  # ត្រឡប់មកដើមវិញដើម្បីឱ្យឮសំឡេងពេល Download
                 audio_bytes = buffer.read()
                 
                 if audio_bytes:
@@ -67,10 +79,10 @@ if st.button("🚀 ផលិត និងទាញយកសំឡេង"):
                     st.download_button(
                         label="📥 ទាញយកឯកសារសំឡេង (.mp3)",
                         data=audio_bytes,
-                        file_name=f"khmer_audio.mp3",
+                        file_name=f"khmer_audio_{datetime.now().strftime('%H%M%S')}.mp3",
                         mime="audio/mp3"
                     )
-                    st.success("រួចរាល់! សូមចុចប៊ូតុងខាងលើដើម្បីដោនឡូត។")
+                    st.success("ផលិតរួចរាល់! សូមចុចប៊ូតុងខាងលើដើម្បីទាញយក។")
         else:
             st.error("ទម្រង់ SRT មិនត្រឹមត្រូវ!")
     else:
