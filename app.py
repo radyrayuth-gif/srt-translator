@@ -1,89 +1,69 @@
 import streamlit as st
 import asyncio
 import edge_tts
+import io
 import re
-from datetime import datetime
 
 st.set_page_config(page_title="Khmer Stable TTS", page_icon="🎙️")
 
-def srt_time_to_seconds(time_str):
-    """បំប្លែងពេលវេលាពី SRT ទៅជាវិនាទី"""
-    try:
-        time_obj = datetime.strptime(time_str.strip().replace(',', '.'), '%H:%M:%S.%f')
-        return (time_obj.hour * 3600) + (time_obj.minute * 60) + time_obj.second + (time_obj.microsecond / 1000000)
-    except:
-        return 0
-
-def parse_srt_clean(srt_text):
-    """ទាញយកតែអក្សរខ្មែរសុទ្ធ និងពេលវេលា (លុបលេខរៀង និង Tag ចេញឱ្យអស់)"""
-    # ស្វែងរកផ្នែកដែលមានពេលវេលា និងអត្ថបទ
+def parse_srt_to_text_list(srt_text):
+    """ច្រោះយកតែអក្សរខ្មែរសុទ្ធ មិនយកលេខរៀង និងមិនយកពេលវេលា"""
     blocks = re.split(r'\n\s*\n', srt_text.strip())
-    subtitles = []
+    clean_texts = []
     
     for block in blocks:
         lines = block.strip().split('\n')
-        if len(lines) >= 2:
-            # ស្វែងរកជួរដែលមានសញ្ញា --> (ពេលវេលា)
-            time_line = ""
-            text_lines = []
-            for line in lines:
-                if "-->" in line:
-                    time_line = line
-                elif not line.strip().isdigit(): # មិនយកជួរដែលមានតែលេខរៀង
-                    text_lines.append(line.strip())
-            
-            if time_line and text_lines:
-                start_time_str = time_line.split("-->")[0].strip()
-                text_content = " ".join(text_lines)
-                # លុប Tag HTML បើមាន (ដូចជា <i>...</i>)
-                text_content = re.sub(r'<[^>]*>', '', text_content)
-                
-                subtitles.append({
-                    "start": srt_time_to_seconds(start_time_str),
-                    "text": text_content
-                })
-    return subtitles
-
-async def generate_audio(subtitles, voice):
-    """ប្រើ SSML បញ្ជាឱ្យ AI ផ្អាកឱ្យចំវិនាទី និងមិនអាន Tag ចេញមកក្រៅ"""
-    ssml = f"<speak version='1.0' xmlns='http://www.w3.org/2001/10/synthesis' xml:lang='km-KH'>"
-    current_time = 0
-    
-    for sub in subtitles:
-        wait_time = sub["start"] - current_time
-        if wait_time > 0:
-            ssml += f"<break time='{int(wait_time * 1000)}ms'/>"
+        text_lines = []
+        for line in lines:
+            # លក្ខខណ្ឌ៖ មិនយកជួរដែលមានសញ្ញា --> និងមិនយកជួរដែលមានតែលេខ
+            if "-->" not in line and not line.strip().isdigit():
+                # លុប Tag HTML ចេញ (ដូចជា <i>, </b>)
+                clean_line = re.sub(r'<[^>]*>', '', line.strip())
+                if clean_line:
+                    text_lines.append(clean_line)
         
-        # បញ្ចូលតែអត្ថបទសុទ្ធសម្រាប់អាន
-        ssml += f"{sub['text']}"
-        # បន្ថែមការផ្អាកបន្តិចក្រោយចប់ឃ្លា ដើម្បីកុំឱ្យជាន់គ្នា
-        current_time = sub["start"] + 0.5 
-        
-    ssml += "</speak>"
+        if text_lines:
+            clean_texts.append(" ".join(text_lines))
+    return clean_texts
+
+async def generate_final_audio(texts, voice):
+    """បំប្លែងអត្ថបទម្ដងមួយឃ្លា រួចតភ្ជាប់គ្នាជា Bytes ផ្ទាល់"""
+    final_audio = b""
+    progress_bar = st.progress(0)
     
-    # បង្កើតសំឡេងពី SSML ដែលបានរៀបចំរួច
-    communicate = edge_tts.Communicate(ssml, voice)
-    audio_data = b""
-    async for chunk in communicate.stream():
-        if chunk["type"] == "audio":
-            audio_data += chunk["data"]
-    return audio_data
+    for i, text in enumerate(texts):
+        # ផ្ញើតែអត្ថបទខ្មែរសុទ្ធទៅឱ្យ AI (គ្មានលេខ គ្មានម៉ោង)
+        communicate = edge_tts.Communicate(text, voice)
+        async for chunk in communicate.stream():
+            if chunk["type"] == "audio":
+                final_audio += chunk["data"]
+        
+        # បន្ថែមចន្លោះស្ងាត់បន្តិចរវាងឃ្លានីមួយៗ (Optional)
+        # ចំណាំ៖ ការតភ្ជាប់ Bytes បែបនេះនឹងអានបន្តគ្នា ប៉ុន្តែធានាមិនអានលេខ និងម៉ោង
+        progress_bar.progress((i + 1) / len(texts))
+        
+    return final_audio
 
-# --- UI ---
-st.title("🎙️ កម្មវិធីអានខ្មែរ (Sync & Clean Version)")
-voice_id = st.sidebar.selectbox("សំឡេង:", ["km-KH-SreymomNeural", "km-KH-PisethNeural"])
-srt_input = st.text_area("បិទភ្ជាប់ SRT ទីនេះ:", height=300)
+st.title("🎙️ កម្មវិធីអានខ្មែរសុទ្ធ (មិនអានម៉ោងនាទី)")
 
-if st.button("🚀 ចាប់ផ្ដើមផលិត"):
+voice_id = st.sidebar.selectbox("ជ្រើសរើសសំឡេង:", ["km-KH-SreymomNeural", "km-KH-PisethNeural"])
+srt_input = st.text_area("បិទភ្ជាប់ SRT របស់អ្នកនៅទីនេះ:", height=300)
+
+if st.button("🚀 ចាប់ផ្ដើមផលិតសំឡេង"):
     if srt_input:
-        subs = parse_srt_clean(srt_input)
-        if subs:
-            with st.spinner("កំពុងផលិតសំឡេង..."):
-                try:
-                    audio_bytes = asyncio.run(generate_audio(subs, voice_id))
-                    st.audio(audio_bytes, format="audio/mp3")
-                    st.download_button("📥 ទាញយក MP3", audio_bytes, "clean_sync_voice.mp3")
-                except Exception as e:
-                    st.error(f"កំហុស៖ {e}")
-        else:
-            st.error("ទម្រង់ SRT មិនត្រឹមត្រូវ ឬរកមិនឃើញអត្ថបទ!")
+        with st.spinner("កំពុងច្រោះអត្ថបទ និងផលិតសំឡេង..."):
+            try:
+                # ជំហានទី១៖ ច្រោះយកតែអក្សរខ្មែរ
+                texts_to_read = parse_srt_to_text_list(srt_input)
+                
+                if texts_to_read:
+                    # ជំហានទី២៖ ផលិតសំឡេង
+                    audio_data = asyncio.run(generate_final_audio(texts_to_read, voice_id))
+                    
+                    st.success("ផលិតជោគជ័យ! សំឡេងនេះនឹងអានតែអក្សរខ្មែរប៉ុណ្ណោះ។")
+                    st.audio(audio_data, format="audio/mp3")
+                    st.download_button("📥 ទាញយក MP3", audio_data, "khmer_clean_voice.mp3")
+                else:
+                    st.error("រកមិនឃើញអត្ថបទខ្មែរក្នុង SRT របស់អ្នកទេ!")
+            except Exception as e:
+                st.error(f"កំហុស៖ {e}")
