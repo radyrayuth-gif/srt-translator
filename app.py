@@ -1,49 +1,53 @@
 import streamlit as st
-import asyncio
-import edge_tts
-import re
-import io
-from pydub import AudioSegment
+import whisper
+import os
+from googletrans import Translator
+from moviepy.editor import VideoFileClip
 
-# មុខងារបំប្លែងម៉ោង SRT ទៅជាមីលីវិនាទី
-def srt_to_ms(time_str):
-    h, m, s = time_str.replace(',', '.').split(':')
-    return int((int(h) * 3600 + int(m) * 60 + float(s)) * 1000)
+st.set_page_config(page_title="បកប្រែវីដេអូចិន-ខ្មែរ", page_icon="🇨🇳")
 
-async def generate_voice(text, voice):
-    communicate = edge_tts.Communicate(text, voice)
-    data = b""
-    async for chunk in communicate.stream():
-        if chunk["type"] == "audio":
-            data += chunk["data"]
-    return AudioSegment.from_file(io.BytesIO(data), format="mp3")
+st.title("🎥 កម្មវិធីបកប្រែវីដេអូចិន មកជាភាសាខ្មែរ")
+st.markdown("បង្ហោះវីដេអូចិនរបស់អ្នក ដើម្បីបម្លែងជាអក្សរខ្មែរដោយស្វ័យប្រវត្តិ")
 
-st.title("🎙️ Khmer SRT Sync (Pro Version)")
+# Load Whisper Model
+@st.cache_resource
+def load_model():
+    return whisper.load_model("base")
 
-srt_input = st.text_area("បិទភ្ជាប់ SRT ទីនេះ:", height=250)
+model = load_model()
+translator = Translator()
 
-if st.button("🚀 ផលិតសំឡេង"):
-    if srt_input:
-        with st.spinner("កំពុងផលិត..."):
-            blocks = re.split(r'\n\s*\n', srt_input.strip())
-            final_audio = AudioSegment.silent(duration=0)
+uploaded_file = st.file_uploader("ជ្រើសរើសវីដេអូ (MP4, MOV, AVI)", type=["mp4", "mov", "avi"])
+
+if uploaded_file is not None:
+    # បង្ហាញវីដេអូដែលបាន Upload
+    st.video(uploaded_file)
+    
+    if st.button("ចាប់ផ្ដើមបកប្រែ"):
+        with st.spinner('កំពុងដំណើរការ... សូមរង់ចាំបន្តិច (វាអាចប្រើពេលតាមទំហំវីដេអូ)'):
+            # ១. រក្សាទុកឯកសារបណ្ដោះអាសន្ន
+            with open("temp_video.mp4", "wb") as f:
+                f.write(uploaded_file.getbuffer())
+
+            # ២. បម្លែងសំឡេងទៅជាអក្សរ (Transcription)
+            result = model.transcribe("temp_video.mp4")
+            chinese_text = result['text']
+
+            # ៣. បកប្រែមកជាភាសាខ្មែរ
+            translation = translator.translate(chinese_text, src='zh-cn', dest='km')
+            khmer_text = translation.text
+
+            # ៤. បង្ហាញលទ្ធផល
+            st.success("ការបកប្រែរួចរាល់!")
             
-            for block in blocks:
-                lines = block.strip().split('\n')
-                time_line = next((l for l in lines if "-->" in l), None)
-                text = " ".join([l.strip() for l in lines if "-->" not in l and not l.strip().isdigit()])
-                
-                if time_line and text:
-                    start_ms = srt_to_ms(time_line.split("-->")[0].strip())
-                    segment = asyncio.run(generate_voice(text, "km-KH-SreymomNeural"))
-                    if len(final_audio) < start_ms:
-                        final_audio += AudioSegment.silent(duration=start_ms - len(final_audio))
-                    final_audio = final_audio.overlay(segment, position=start_ms)
-
-            # នាំចេញជា MP3
-            buffer = io.BytesIO()
-            final_audio.export(buffer, format="mp3")
-            buffer.seek(0) # ត្រឡប់មកដើមវិញដើម្បីឱ្យឮសំឡេង
+            col1, col2 = st.columns(2)
+            with col1:
+                st.subheader("អក្សរចិន (Original)")
+                st.write(chinese_text)
             
-            st.audio(buffer, format="audio/mp3")
-            st.download_button("📥 ទាញយក MP3", buffer, "voice_sync.mp3")
+            with col2:
+                st.subheader("អក្សរខ្មែរ (Translated)")
+                st.write(khmer_text)
+
+            # លុបឯកសារចោលវិញ
+            os.remove("temp_video.mp4")
