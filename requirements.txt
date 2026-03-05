@@ -1,4 +1,4 @@
 streamlit
 openai-whisper
 moviepy
-openai
+google-generativeai
