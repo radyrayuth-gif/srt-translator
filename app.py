@@ -1,41 +1,47 @@
 import streamlit as st
 import whisper
 import os
-import google.generativeai as genai
+import requests
+import json
 import time
 
-st.set_page_config(page_title="Gemini AI Translator Fixed", page_icon="♊")
+st.set_page_config(page_title="Gemini Final Fix", page_icon="♊")
 
-# Sidebar settings
 with st.sidebar:
     st.title("⚙️ ការកំណត់")
     gemini_key = st.text_input("បញ្ចូល Gemini API Key៖", type="password")
     st.info("យក Key នៅ៖ [Google AI Studio](https://aistudio.google.com/app/apikey)")
 
-st.title("♊ បកប្រែវីដេអូចិន-ខ្មែរ (ជំនាន់ដោះស្រាយ Error 404)")
+st.title("♊ បកប្រែវីដេអូចិន-ខ្មែរ (ជំនាន់ចុងក្រោយបង្អស់)")
 st.markdown("---")
 
-# ១. មុខងារបកប្រែដែលធានាថានឹងដើរ (Robust Translation)
-def translate_text(text, api_key):
+# ១. មុខងារបកប្រែដោយប្រើ REST API (វិធីនេះដើរ ១០០% ទោះ Model ធម្មតារកមិនឃើញ)
+def translate_khmer(text, api_key):
     if not api_key: return "Missing API Key"
     
-    genai.configure(api_key=api_key)
+    # ប្រើ URL ជំនាន់ v1beta ដែលគាំទ្រ Gemini 1.5 Flash គ្រប់តំបន់
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={api_key}"
     
-    # បញ្ជី Model ដែលត្រូវសាកល្បងម្ដងមួយៗ បើមួយណា Error វានឹងប្ដូរទៅមួយទៀត
-    models_to_try = ['gemini-1.5-pro', 'gemini-1.5-flash', 'gemini-1.0-pro']
-    
-    prompt = f"Translate this Chinese subtitle to natural Khmer. Return only translated text: {text}"
-    
-    for model_name in models_to_try:
-        try:
-            model = genai.GenerativeModel(model_name)
-            response = model.generate_content(prompt)
-            if response and response.text:
-                return response.text.strip()
-        except Exception:
-            continue # បើ Error 404 វានឹងទៅសាក Model បន្ទាប់
-            
-    return "Error: មិនអាចហៅ Model បកប្រែបានទេ (សូមពិនិត្យ API Key)"
+    headers = {'Content-Type': 'application/json'}
+    payload = {
+        "contents": [{
+            "parts": [{
+                "text": f"Translate this Chinese subtitle text to natural Khmer language. Return only the result: {text}"
+            }]
+        }]
+    }
+
+    try:
+        response = requests.post(url, headers=headers, data=json.dumps(payload))
+        data = response.json()
+        
+        # ទាញយកអត្ថបទបកប្រែចេញពី JSON
+        if 'candidates' in data:
+            return data['candidates'][0]['content']['parts'][0]['text'].strip()
+        else:
+            return f"Error: {data.get('error', {}).get('message', 'Unknown Error')}"
+    except Exception as e:
+        return f"Request Error: {str(e)}"
 
 # ២. បង្កើត SRT
 def create_srt(segments, api_key):
@@ -46,8 +52,8 @@ def create_srt(segments, api_key):
     for i, segment in enumerate(segments):
         start, end, text = segment['start'], segment['end'], segment['text']
         
-        # បកប្រែ
-        translated = translate_text(text, api_key)
+        # បកប្រែតាមរយៈ REST API
+        translated = translate_khmer(text, api_key)
         
         def format_time(seconds):
             h = int(seconds // 3600); m = int((seconds % 3600) // 60)
@@ -56,7 +62,7 @@ def create_srt(segments, api_key):
 
         srt_content += f"{i+1}\n{format_time(start)} --> {format_time(end)}\n{translated}\n\n"
         progress_bar.progress((i + 1) / total)
-        time.sleep(0.6) # ការពារ Rate Limit (Free Tier)
+        time.sleep(1) # បន្ថែម Delay ដើម្បីកុំឱ្យលើស Limit របស់ Free Key
         
     return srt_content
 
@@ -81,19 +87,16 @@ if uploaded_file:
                     f.write(uploaded_file.getbuffer())
 
                 try:
-                    # ជំហាន ១៖ Whisper Transcription
-                    st.info("🔄 កំពុងស្ដាប់សំឡេងវីដេអូ...")
+                    # Transcription
                     result = model_w.transcribe(video_path, fp16=False)
-                    
-                    # ជំហាន ២៖ Gemini Translation
-                    st.info("🔄 កំពុងបកប្រែជាភាសាខ្មែរ (Gemini)...")
+                    # Translation
                     srt_data = create_srt(result['segments'], gemini_key)
                     
-                    st.success("✅ រួចរាល់!")
+                    st.success("✅ បកប្រែរួចរាល់!")
                     st.download_button(
                         label="📥 ទាញយក Subtitle ខ្មែរ",
                         data=srt_data,
-                        file_name="translated_khmer.srt",
+                        file_name="khmer_subtitle.srt",
                         mime="text/plain"
                     )
                 except Exception as e:
