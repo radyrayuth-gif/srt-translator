@@ -9,6 +9,7 @@ from pydub import AudioSegment
 st.set_page_config(page_title="Khmer TTS Pro - លោកពូប៉ាវ", page_icon="🎙️")
 
 def parse_srt(srt_text):
+    # កែសម្រួល Regex ឱ្យកាន់តែច្បាស់លាស់
     pattern = r"(\d+)\n(\d{2}:\d{2}:\d{2},\d{3}) --> (\d{2}:\d{2}:\d{2},\d{3})\n(.*?)(?=\n\n|\n$|$)"
     matches = re.findall(pattern, srt_text, re.DOTALL)
     subtitles = []
@@ -22,53 +23,71 @@ def parse_srt(srt_text):
         })
     return subtitles
 
+async def fetch_audio_chunk(text, voice, rate_str, pitch_str):
+    """មុខងារជំនួយសម្រាប់ទាញយកសំឡេងម្ដងមួយដុំៗ"""
+    communicate = edge_tts.Communicate(text, voice, rate=rate_str, pitch=pitch_str)
+    audio_data = b""
+    async for chunk in communicate.stream():
+        if chunk["type"] == "audio":
+            audio_data += chunk["data"]
+    return audio_data
+
 async def generate_audio(srt_text, voice, rate, pitch):
     subs = parse_srt(srt_text)
-    
-    # ១. រកមើលម៉ោងបញ្ចប់ចុងក្រោយបង្អស់ ដើម្បីបង្កើត Timeline ឱ្យវែងល្មម
-    # យើងបន្ថែម ៥ វិនាទីទៀត ដើម្បីកុំឱ្យដាច់សំឡេងចុងក្រោយ
-    max_duration = subs[-1]['start_ms'] + 5000 if subs else 0
-    final_combined = AudioSegment.silent(duration=max_duration)
-    
+    if not subs:
+        return None
+        
     rate_str = f"{rate:+d}%"
     pitch_str = f"{pitch:+d}Hz"
 
-    for sub in subs:
-        # ២. បង្កើតសំឡេង AI
-        communicate = edge_tts.Communicate(sub['text'], voice, rate=rate_str, pitch=pitch_str)
-        audio_data = b""
-        async for chunk in communicate.stream():
-            if chunk["type"] == "audio":
-                audio_data += chunk["data"]
-        
-        segment = AudioSegment.from_file(io.BytesIO(audio_data), format="mp3")
-        
-        # ៣. ប្រើ position parameter នៅក្នុង overlay ដើម្បីបង្ខំឱ្យវាដាក់ចំ Start Time
-        # វិធីនេះនឹងធ្វើឱ្យវាលោតទៅអានចំវិនាទីដែលអ្នកកំណត់ជានិច្ច
+    # ១. ទាញយកសំឡេងទាំងអស់ក្នុងពេលតែមួយ (Turbo Mode)
+    tasks = [fetch_audio_chunk(sub['text'], voice, rate_str, pitch_str) for sub in subs]
+    audio_chunks = await asyncio.gather(*tasks)
+    
+    # ២. បង្កើត Timeline ឱ្យវែងល្មម (Buffer 10 វិនាទីបន្ថែម)
+    max_duration = subs[-1]['start_ms'] + 10000 
+    final_combined = AudioSegment.silent(duration=max_duration)
+    
+    last_end_point = 0
+    for i, sub in enumerate(subs):
+        segment = AudioSegment.from_file(io.BytesIO(audio_chunks[i]), format="mp3")
+        # ដាក់សំឡេងចូលក្នុង Timeline តាមម៉ោង Start Time
         final_combined = final_combined.overlay(segment, position=sub['start_ms'])
+        
+        # រក្សាទុកម៉ោងដែលសំឡេងចុងក្រោយបញ្ចប់
+        current_end = sub['start_ms'] + len(segment)
+        if current_end > last_end_point:
+            last_end_point = current_end
 
-    # កាត់ផ្នែកដែលនៅសល់ (Silence) ចោលវិញក្រោយពេលបញ្ចូលរួច
-    # (Optional: បើចង់ឱ្យ File តូច អាចកាត់ត្រឹមចុងបញ្ចប់នៃសំឡេងចុងក្រោយ)
+    # ៣. កាត់ផ្នែក Silence ដែលនៅសល់ខាងចុងចោល
+    final_combined = final_combined[:last_end_point + 500]
 
     buffer = io.BytesIO()
     final_combined.export(buffer, format="mp3")
     return buffer.getvalue()
 
-# --- UI (រក្សាដូចដើម) ---
-st.title("🎙️ Khmer SRT (Strict Start Time Fix)")
-st.write("ជំនាន់កែសម្រួល៖ បង្ខំឱ្យអានចំម៉ោង Start Time គ្រប់បន្ទាត់")
+# --- UI ---
+st.title("🎙️ Khmer SRT Audio Sync")
+st.info("ជំនាន់កែសម្រួល៖ ដំណើរការលឿនជាងមុន និងស៊ីម៉ោងច្បាស់លាស់")
 
-voice_choice = st.selectbox("ជ្រើសរើសអ្នកអាន:", ["km-KH-SreymomNeural", "km-KH-PisethNeural"])
-speed = st.slider("ល្បឿន (%):", -50, 50, 0, 5)
-pitch = st.slider("កម្រិតសំឡេង (Hz):", -20, 20, 0, 1)
-srt_input = st.text_area("បញ្ចូល SRT:", height=250)
+col1, col2 = st.columns(2)
+with col1:
+    voice_choice = st.selectbox("ជ្រើសរើសអ្នកអាន:", ["km-KH-SreymomNeural", "km-KH-PisethNeural"])
+    speed = st.slider("ល្បឿន (%):", -50, 50, 0, 5)
+with col2:
+    pitch = st.slider("កម្រិតសំឡេង (Hz):", -20, 20, 0, 1)
+
+srt_input = st.text_area("បញ្ចូល SRT របស់អ្នកនៅទីនេះ:", height=300, placeholder="1\n00:00:01,000 --> 00:00:03,000\nសួស្ដីបងប្អូនទាំងអស់គ្នា...")
 
 if st.button("🔊 ផលិតសំឡេង"):
     if srt_input.strip():
-        with st.spinner("កំពុងដាក់សំឡេងចូល Timeline..."):
+        with st.spinner("កំពុងដំណើរការ... សូមរង់ចាំមួយភ្លែត"):
             try:
                 final_audio = asyncio.run(generate_audio(srt_input, voice_choice, speed, pitch))
-                st.audio(final_audio)
-                st.download_button("📥 ទាញយក MP3", final_audio, "strict_sync.mp3")
+                if final_audio:
+                    st.audio(final_audio)
+                    st.download_button("📥 ទាញយក MP3", final_audio, "khmer_audio_sync.mp3")
             except Exception as e:
                 st.error(f"បញ្ហា៖ {e}")
+    else:
+        st.warning("សូមបញ្ចូលអត្ថបទ SRT ជាមុនសិន!")
