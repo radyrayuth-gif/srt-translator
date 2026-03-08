@@ -1,109 +1,74 @@
 import streamlit as st
-import whisper
-import os
-import requests
-import json
-import time
+import asyncio
+import edge_tts
+import re
+import io
+from pydub import AudioSegment
 
-st.set_page_config(page_title="AI Video Translator Fixed", page_icon="⚡")
+# --- កំណត់ទំព័រ ---
+st.set_page_config(page_title="Khmer TTS Pro - លោកពូប៉ាវ", page_icon="🎙️")
 
-with st.sidebar:
-    st.title("⚙️ ការកំណត់")
-    gemini_key = st.text_input("បញ្ចូល Gemini API Key របស់អ្នក៖", type="password")
-    st.info("យក Key នៅ៖ [Google AI Studio](https://aistudio.google.com/app/apikey)")
+def parse_srt(srt_text):
+    pattern = r"(\d+)\n(\d{2}:\d{2}:\d{2},\d{3}) --> (\d{2}:\d{2}:\d{2},\d{3})\n(.*?)(?=\n\n|\n$|$)"
+    matches = re.findall(pattern, srt_text, re.DOTALL)
+    subtitles = []
+    def to_ms(time_str):
+        h, m, s = time_str.replace(',', '.').split(':')
+        return int(h)*3600000 + int(m)*60000 + float(s)*1000
+    for match in matches:
+        subtitles.append({
+            "start_ms": to_ms(match[1]),
+            "text": match[3].strip()
+        })
+    return subtitles
 
-st.title("⚡ AI Video Translator (Gemini 1.5 Flash)")
-st.markdown("---")
-
-# ១. មុខងារបកប្រែដោយប្រើ API v1 (Stable Version)
-def translate_khmer_ai(text, api_key):
-    if not api_key: return "Missing API Key"
+async def generate_audio(srt_text, voice, rate, pitch):
+    subs = parse_srt(srt_text)
     
-    # ប្រើ API v1 (មិនមែន v1beta) ដើម្បីជៀសវាង Error 404
-    url = f"https://generativelanguage.googleapis.com/v1/models/gemini-1.5-flash:generateContent?key={api_key}"
+    # ១. រកមើលម៉ោងបញ្ចប់ចុងក្រោយបង្អស់ ដើម្បីបង្កើត Timeline ឱ្យវែងល្មម
+    # យើងបន្ថែម ៥ វិនាទីទៀត ដើម្បីកុំឱ្យដាច់សំឡេងចុងក្រោយ
+    max_duration = subs[-1]['start_ms'] + 5000 if subs else 0
+    final_combined = AudioSegment.silent(duration=max_duration)
     
-    headers = {'Content-Type': 'application/json'}
-    payload = {
-        "contents": [{
-            "parts": [{
-                "text": f"Translate this Chinese subtitle to natural, conversational Khmer. Context: Movie subtitle. Result only: {text}"
-            }]
-        }]
-    }
+    rate_str = f"{rate:+d}%"
+    pitch_str = f"{pitch:+d}Hz"
 
-    try:
-        response = requests.post(url, headers=headers, data=json.dumps(payload))
-        data = response.json()
+    for sub in subs:
+        # ២. បង្កើតសំឡេង AI
+        communicate = edge_tts.Communicate(sub['text'], voice, rate=rate_str, pitch=pitch_str)
+        audio_data = b""
+        async for chunk in communicate.stream():
+            if chunk["type"] == "audio":
+                audio_data += chunk["data"]
         
-        # ត្រួតពិនិត្យលទ្ធផល
-        if 'candidates' in data and len(data['candidates']) > 0:
-            return data['candidates'][0]['content']['parts'][0]['text'].strip()
-        elif 'error' in data:
-            # បើនៅតែ Error 404 ជាមួយ Flash យើងនឹងប្តូរទៅប្រើ Gemini 1.0 Pro ស្វ័យប្រវត្តិ
-            return "Error: " + data['error']['message']
-        else:
-            return "Translation Error"
-    except Exception as e:
-        return f"Request Error: {str(e)}"
-
-# ២. មុខងារបង្កើត SRT
-def create_srt(segments, api_key):
-    srt_content = ""
-    total = len(segments)
-    progress_bar = st.progress(0, text="AI កំពុងបកប្រែតាមន័យសាច់រឿង...")
-    
-    for i, segment in enumerate(segments):
-        start, end, text = segment['start'], segment['end'], segment['text']
+        segment = AudioSegment.from_file(io.BytesIO(audio_data), format="mp3")
         
-        # បកប្រែ
-        translated = translate_khmer_ai(text, api_key)
-        
-        def format_time(seconds):
-            h = int(seconds // 3600); m = int((seconds % 3600) // 60)
-            s = int(seconds % 60); ms = int((seconds % 1) * 1000)
-            return f"{h:02}:{m:02}:{s:02},{ms:03}"
+        # ៣. ប្រើ position parameter នៅក្នុង overlay ដើម្បីបង្ខំឱ្យវាដាក់ចំ Start Time
+        # វិធីនេះនឹងធ្វើឱ្យវាលោតទៅអានចំវិនាទីដែលអ្នកកំណត់ជានិច្ច
+        final_combined = final_combined.overlay(segment, position=sub['start_ms'])
 
-        srt_content += f"{i+1}\n{format_time(start)} --> {format_time(end)}\n{translated}\n\n"
-        
-        progress_bar.progress((i + 1) / total)
-        time.sleep(1) # Delay ដើម្បីកុំឱ្យជាប់ Rate Limit
-        
-    return srt_content
+    # កាត់ផ្នែកដែលនៅសល់ (Silence) ចោលវិញក្រោយពេលបញ្ចូលរួច
+    # (Optional: បើចង់ឱ្យ File តូច អាចកាត់ត្រឹមចុងបញ្ចប់នៃសំឡេងចុងក្រោយ)
 
-# --- ដំណើរការ Whisper ---
-@st.cache_resource
-def load_whisper():
-    return whisper.load_model("base")
+    buffer = io.BytesIO()
+    final_combined.export(buffer, format="mp3")
+    return buffer.getvalue()
 
-model_w = load_whisper()
+# --- UI (រក្សាដូចដើម) ---
+st.title("🎙️ Khmer SRT (Strict Start Time Fix)")
+st.write("ជំនាន់កែសម្រួល៖ បង្ខំឱ្យអានចំម៉ោង Start Time គ្រប់បន្ទាត់")
 
-uploaded_file = st.file_uploader("បង្ហោះវីដេអូចិន...", type=["mp4", "mov", "avi"])
+voice_choice = st.selectbox("ជ្រើសរើសអ្នកអាន:", ["km-KH-SreymomNeural", "km-KH-PisethNeural"])
+speed = st.slider("ល្បឿន (%):", -50, 50, 0, 5)
+pitch = st.slider("កម្រិតសំឡេង (Hz):", -20, 20, 0, 1)
+srt_input = st.text_area("បញ្ចូល SRT:", height=250)
 
-if uploaded_file:
-    st.video(uploaded_file)
-    if st.button("🚀 ចាប់ផ្ដើមបកប្រែ"):
-        if not gemini_key:
-            st.warning("⚠️ សូមបញ្ចូល API Key ជាមុនសិន!")
-        else:
-            with st.spinner('កំពុងដំណើរការ...'):
-                video_path = "temp_video.mp4"
-                with open(video_path, "wb") as f:
-                    f.write(uploaded_file.getbuffer())
-
-                try:
-                    # ១. ស្ដាប់សំឡេង
-                    result = model_w.transcribe(video_path, fp16=False)
-                    # ២. បកប្រែ
-                    srt_data = create_srt(result['segments'], gemini_key)
-                    
-                    st.success("✅ រួចរាល់!")
-                    st.download_button(
-                        label="📥 ទាញយក Subtitle ខ្មែរ",
-                        data=srt_data,
-                        file_name="gemini_fixed_kh.srt",
-                        mime="text/plain"
-                    )
-                except Exception as e:
-                    st.error(f"Error: {e}")
-                finally:
-                    if os.path.exists(video_path): os.remove(video_path)
+if st.button("🔊 ផលិតសំឡេង"):
+    if srt_input.strip():
+        with st.spinner("កំពុងដាក់សំឡេងចូល Timeline..."):
+            try:
+                final_audio = asyncio.run(generate_audio(srt_input, voice_choice, speed, pitch))
+                st.audio(final_audio)
+                st.download_button("📥 ទាញយក MP3", final_audio, "strict_sync.mp3")
+            except Exception as e:
+                st.error(f"បញ្ហា៖ {e}")
